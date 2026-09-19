@@ -280,6 +280,25 @@ end
 # ==============================================================================
 # --- EULERIAN STATISTICAL REDUCTIONS ---
 # ==============================================================================
+
+# 1. The inline helper that safely executes the lambda out of @batch's sight
+@inline function _extract_coords(axes, kept_idx, I, ::Val{L}, ::Type{T}) where {L, T}
+    return SVector{L, T}(ntuple(d -> axes[kept_idx[d]][I[d]], Val(L)))
+end
+
+# 2. The type-stable barrier function containing the clean loop
+function _batch_stat_calc!(res, u_slices, ana_slices, axes, kept_idx, domain, stat_name, ::Val{L}, ::Type{T}) where {L, T}
+    @batch for i in eachindex(u_slices)
+        I = CartesianIndices(u_slices)[i]
+        
+        # Zero-allocation SVector generation!
+        fixed_coords = _extract_coords(axes, kept_idx, I, Val(L), T)
+        
+        res[i] = calc_stat(Val(stat_name), fixed_coords, vec(u_slices[i]), vec(ana_slices[i]), domain)
+    end
+end
+
+# 3. The main entry point
 """
     _calc_stat!(sim_data::ESimData, u_ana, stat_name::Symbol)
     _calc_stat!(sim_data::LSimData, u_ana, stat_name::Symbol)
@@ -303,17 +322,15 @@ function _calc_stat!(sim_data::ESimData{D, DS, M, T}, u_ana, stat_name::Symbol) 
         return calc_stat(Val(stat_name), SVector{0, T}(), vec(sim_data.u), vec(u_ana), sim_data.domain)
     end
     
-    out_sz = ntuple(d -> length(sim_data.axes[kept_idx[d]]), length(kept_idx))
-    res = Array{SVector{M, T}, length(kept_idx)}(undef, out_sz...)
+    L = length(kept_idx)
+    out_sz = ntuple(d -> length(sim_data.axes[kept_idx[d]]), L)
+    res = Array{SVector{M, T}, L}(undef, out_sz...)
     
     u_slices = eachslice(sim_data.u, dims=Tuple(kept_idx))
     ana_slices = eachslice(u_ana, dims=Tuple(kept_idx))
     
-    @batch for i in eachindex(u_slices)
-        I = CartesianIndices(u_slices)[i]
-        fixed_coords = SVector{length(kept_idx), T}(ntuple(d -> sim_data.axes[kept_idx[d]][I[d]], length(kept_idx)))
-        res[i] = calc_stat(Val(stat_name), fixed_coords, vec(u_slices[i]), vec(ana_slices[i]), sim_data.domain)
-    end
+    # Cross the function barrier to turn runtime `L` into compile-time `Val(L)`
+    _batch_stat_calc!(res, u_slices, ana_slices, sim_data.axes, kept_idx, sim_data.domain, stat_name, Val(L), T)
     
     return res
 end

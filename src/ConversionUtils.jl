@@ -1,4 +1,3 @@
-
 """
     _get_lsim_bounds(x::Vector{Vector{SVector{DS, T}}}) where {DS, T}
 
@@ -153,7 +152,7 @@ function create_sim_data(
 ) where {DS, M, T<:Real}
     D = DS + 1 
     
-    auto_mins, auto_maxs = _get_lsim_bounds(x) # Ensure _get_lsim_bounds uses T
+    auto_mins, auto_maxs = _get_lsim_bounds(x)
     _xmins = isnothing(xmins) ? auto_mins : Tuple(T.(xmins))
     _xmaxs = isnothing(xmaxs) ? auto_maxs : Tuple(T.(xmaxs))
     _tmin  = isnothing(tmin)  ? T(minimum(t)) : T(tmin)
@@ -252,7 +251,6 @@ function interpolate_to_grid!(
                     w = 1.0 / max(dist2, 1e-12) 
                     
                     if D > DS
-
                         full_idx = CartesianIndex(Tuple(cell_idx)..., t_idx)
                         
                         w_euler[full_idx] += w
@@ -320,31 +318,25 @@ Crucially, it utilizes linear interpolation for spatial dimensions and constant 
 - `ESimData`: The newly interpolated Eulerian dataset, wrapped with updated `DomainInfo` and spacing.
 """
 function resample_eulerian(data::ESimData{D, DS, M, T}, res::NTuple{D, Int}) where {D, DS, M, T}
-    # 1. Fast exit if resolutions already match perfectly
     if size(data.u) == res
         return data
     end
     
-    @info "Interpolating Eulerian data from $(size(data.u)) to $res (Linear Space, Constant Time)..."
+    @info "Interpolating Eulerian data from $(size(data.u)) to$res (Linear Space, Constant Time)..."
     
-    # 2. Build the new coordinate axes
     new_axes = ntuple(D) do d
         collect(range(data.domain.mins[d], data.domain.maxs[d], length=res[d]))
     end
     
-    # 3. Create mixed interpolation object for the main tensor
     interp_types = ntuple(Val(D)) do d
         data.domain.dim_keys[d] == data.domain.time_dim ? Gridded(Constant()) : Gridded(Linear())
     end
     
-    # Flat extrapolation prevents bounds errors if float precision causes slight overshoots
     itp_obj = interpolate(data.axes, data.u, interp_types)
     itp = extrapolate(itp_obj, Flat())
     
-    # Evaluate the interpolation across the entire new grid
     new_u = [itp(pt...) for pt in Iterators.product(new_axes...)]
     
-    # 4. Dynamically resample statistics using the same mixed logic
     new_stats = StatDict{M, T}()
     for (k, v) in data.stats
         if !(v isa AbstractArray) || isempty(v)
@@ -352,7 +344,6 @@ function resample_eulerian(data::ESimData{D, DS, M, T}, res::NTuple{D, Int}) whe
             continue
         end
         
-        # Determine which dimensions this specific stat cares about
         kept_dims = get_kept_dims(k, data.domain)
         if isempty(kept_dims)
             new_stats[k] = copy(v)
@@ -367,7 +358,6 @@ function resample_eulerian(data::ESimData{D, DS, M, T}, res::NTuple{D, Int}) whe
             continue
         end
         
-        # Interpolate the stat across its specific sub-dimensions
         stat_axes = ntuple(i -> data.axes[kept_indices[i]], length(kept_indices))
         stat_new_axes = ntuple(i -> new_axes[kept_indices[i]], length(kept_indices))
         
@@ -381,7 +371,6 @@ function resample_eulerian(data::ESimData{D, DS, M, T}, res::NTuple{D, Int}) whe
         new_stats[k] = [stat_itp(pt...) for pt in Iterators.product(stat_new_axes...)]
     end
     
-    # 5. Build updated spacing and DomainInfo
     new_spacing = SVector{D, T}(
         ntuple(d -> res[d] > 1 ? (data.domain.maxs[d] - data.domain.mins[d]) / T(res[d] - 1) : one(T), Val(D))
     )
@@ -393,10 +382,6 @@ function resample_eulerian(data::ESimData{D, DS, M, T}, res::NTuple{D, Int}) whe
     
     return ESimData{D, DS, M, T}(data.params, new_domain, new_axes, new_u, new_stats)
 end
-
-# ==============================================================================
-# --- CONVERSIONS ---
-# ==============================================================================
 
 """
     convert_to_eulerian(ldata::LSimData, res::NTuple{D, Int}; spatial_interp=:scatter)
@@ -424,7 +409,6 @@ function convert_to_eulerian(
     t_dim_idx = get_time_dim(ldata.domain)
     T_len = length(ldata.t)
     
-    # 1. Extract spatial resolutions from the unified spacetime res tuple
     spatial_res = isnothing(t_dim_idx) ? res : ntuple(d -> res[d < t_dim_idx ? d : d+1], Val(DS))
     
     grid_axes = ntuple(d -> collect(range(mins[d], maxs[d], length=spatial_res[d])), Val(DS))
@@ -435,21 +419,18 @@ function convert_to_eulerian(
     s_dx = (s_maxs - s_mins) ./ max.(1, spatial_res .- 1)
     s_inv_dx = 1.0 ./ s_dx
     
-    # 2. Target Eulerian Spacetime Shape (Uses native T_len for the initial scatter pass)
     e_shape = ntuple(d -> d <= DS ? spatial_res[d] : T_len, Val(D))
     e_axes = ntuple(d -> d <= DS ? grid_axes[d] : ldata.t, Val(D))
     e_dim_keys = D > DS ? (ldata.domain.dim_keys[1:DS]..., time_dim) : ldata.domain.dim_keys
     e_spacing = SVector{D, T}(ntuple(d -> d <= DS ? s_dx[d] : ldata.domain.spacing[d], Val(D)))
     e_domain = DomainInfo{D, T}(e_dim_keys, mins, maxs, e_spacing, time_dim, ldata.domain.stat_registry)
 
-    # 3. Preallocate Main Tensors
     zero_vec = zero(SVector{M, T})
     nan_vec = zero_vec .* NaN
     
     u_euler = fill(zero_vec, e_shape...)
     w_euler = zeros(T, e_shape...)
     
-    # 4. Stats copying logic
     e_stats = StatDict{M, T}()
     field_keys = Symbol[]
     
@@ -458,6 +439,7 @@ function convert_to_eulerian(
     field_vals_vec = typeof_field_vals[]
     
     for (k, v) in ldata.stats
+        if k === :Solution; continue end
         kept_dims = get_kept_dims(k, ldata.domain)
         
         if kept_dims == [time_dim] || isempty(kept_dims)
@@ -472,21 +454,20 @@ function convert_to_eulerian(
     e_fields_tup = Tuple(e_fields_vec)
     field_vals_tup = Tuple(field_vals_vec)
 
-    # 5. Delegate spatial mesh generation to the modular interpolator
     interpolate_to_grid!(
         Val(spatial_interp), u_euler, w_euler, e_fields_tup, ldata, 
         field_vals_tup, nan_vec, 
         s_mins, s_maxs, s_dx, s_inv_dx, grid_shape
     )
 
-    # 6. Merge scattered fields back into the main stats dictionary
     for i in 1:length(field_keys)
         e_stats[field_keys[i]] = e_fields_vec[i]
     end
 
+    e_stats[:Solution] = u_euler
+
     edata = ESimData{D, DS, M, T}(ldata.params, e_domain, e_axes, u_euler, e_stats)
     
-    # 7. Apply temporal resampling ONLY if the requested time resolution differs from the native frames
     needs_time_resampling = D > DS && T_len != res[t_dim_idx]
     return needs_time_resampling ? resample_eulerian(edata, res) : edata
 end
@@ -495,13 +476,13 @@ end
     convert_to_lagrangian(data::ESimData)
 
 Translates a dense Eulerian grid into static, structured Lagrangian particles across time. 
-It achieves this by flattening the spatial meshgrid into 1D particle arrays and dynamically reshaping the multidimensional tensor slices to map onto these points at every time step.
+It maps all custom statistical fields to the new particle arrays, flattening multidimensional tensor slices to align with the spatial coordinates at every time step.
 
 # Arguments
 - `data::ESimData`: The native Eulerian dataset.
 
 # Returns
-- `LSimData`: The synthesized Lagrangian dataset representing the grid as stationary particles.
+- `LSimData`: The synthesized Lagrangian dataset representing the grid as stationary particles, with all spatial fields perfectly preserved.
 """
 function convert_to_lagrangian(data::ESimData{D, DS, M, T}) where {D, DS, M, T}
     t_dim = get_time_dim(data.domain)
@@ -510,23 +491,54 @@ function convert_to_lagrangian(data::ESimData{D, DS, M, T}) where {D, DS, M, T}
     T_len = is_static ? 1 : length(data.axes[t_dim])
     t_vec = is_static ? T[0.0] : data.axes[t_dim]
     
-    grid_shape = filter(d -> d != t_dim, 1:D)
+    spatial_dims = Tuple(filter(d -> d != t_dim, 1:D))
+    grid_shape = ntuple(i -> length(data.axes[spatial_dims[i]]), DS)
     
-    # 1. Flatten the spatial meshgrid into 1D particle arrays
-    pts = vec([SVector{DS, T}(ntuple(dim -> data.axes[dim][idx[dim]], Val(DS))) 
+    pts = vec([SVector{DS, T}(ntuple(i -> data.axes[spatial_dims[i]][idx[i]], Val(DS))) 
                for idx in CartesianIndices(grid_shape)])
     
     new_x = [copy(pts) for _ in 1:T_len]
     new_u = Vector{Vector{SVector{M, T}}}(undef, T_len)
     
-    # 2. Reshape Tensor slices dynamically
     for t in 1:T_len
         slice = is_static ? data.u : selectdim(data.u, t_dim, t)
-        new_u[t] = vec(slice)
+        # Using collect ensures SubArrays are manifested into flat Vectors
+        new_u[t] = collect(vec(slice)) 
     end
     
+    new_stats = StatDict{M, T}()
+    for (k, v) in data.stats
+        if k === :Solution
+            continue 
+        end
+        
+        kept_dims = get_kept_dims(k, data.domain)
+        
+        if kept_dims == [data.domain.time_dim] || isempty(kept_dims)
+            new_stats[k] = copy(v)
+        else
+            has_time = !is_static && (data.domain.time_dim in kept_dims)
+            
+            ET = eltype(v)
+            new_field = Vector{Vector{ET}}(undef, T_len)
+            
+            for t in 1:T_len
+                if has_time
+                    stat_t_dim = findfirst(x -> x == data.domain.time_dim, kept_dims)
+                    slice = selectdim(v, stat_t_dim, t)
+                    # Using collect prevents ReshapedArray assignment errors
+                    new_field[t] = collect(vec(slice)) 
+                else
+                    new_field[t] = collect(vec(v))
+                end
+            end
+            new_stats[k] = new_field
+        end
+    end
+    
+    new_stats[:Solution] = new_u
+    
     return LSimData{D, DS, M, T}(
-        data.params, data.domain, t_vec, new_x, new_u, 
-        StatDict{M, T}()
+        data.params, data.domain, t_vec, new_x, new_u, new_stats
     )
 end
