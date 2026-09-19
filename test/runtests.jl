@@ -314,6 +314,9 @@ end
         # 1. Generate and save a baseline Eulerian dataset to disk
         params_conv = create_param_dict(:N => 40, :scheme => "upwind", :cfl => 0.5, :test_mode => "conversion")
         sim_base = advection_solver_1d(params_conv)
+        
+        add_stat!(sim_base,:u_copy,deepcopy(sim_base.u),:all)
+
         save_sim_data(sim_base; overwrite=true)
         
         # Verify the raw data exists
